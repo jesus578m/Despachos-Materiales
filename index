@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Despacho de Materiales</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    ::-webkit-scrollbar{height:8px;width:8px}
+    ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:6px}
+  </style>
+
+  <!-- 🔧 Cambia esta URL a tu Worker -->
+  <script>
+    window.API_BASE = "https://tu-worker.workers.dev/api";
+  </script>
+
+  <!-- Tu base local (seed + fallback) -->
+  <script src="stock-data.js"></script>
+</head>
+<body class="bg-slate-50 text-slate-900">
+  <div class="max-w-[1200px] mx-auto p-4">
+    <header class="flex items-center justify-between gap-4 mb-4">
+      <h1 class="text-2xl font-bold">📦 Despacho de Materiales</h1>
+      <nav class="flex gap-2" id="tabs">
+        <button data-tab="despacho" class="tab-btn px-4 py-2 rounded-lg bg-sky-600 text-white">Despacho</button>
+        <button data-tab="descargas" class="tab-btn px-4 py-2 rounded-lg bg-white text-slate-700 border">Descargas</button>
+      </nav>
+    </header>
+
+    <!-- DESPACHO -->
+    <section id="view-despacho" class="space-y-4">
+      <div class="grid md:grid-cols-5 grid-cols-1 gap-3">
+        <div class="col-span-2">
+          <label class="text-xs text-slate-500">Número de parte</label>
+          <div class="flex gap-2">
+            <input id="np" class="flex-1 px-3 py-2 rounded-lg border focus:outline-none focus:ring-2 focus:ring-sky-500" placeholder="Escribe el número de parte…" />
+            <button id="btnBuscar" class="px-4 py-2 rounded-lg bg-sky-600 text-white">Buscar</button>
+          </div>
+        </div>
+        <div>
+          <label class="text-xs text-slate-500">Matrícula (T5)</label>
+          <input id="matricula" class="w-full px-3 py-2 rounded-lg border" />
+        </div>
+        <div>
+          <label class="text-xs text-slate-500">N.E. Técnico (Q5)</label>
+          <input id="neTecnico" class="w-full px-3 py-2 rounded-lg border" />
+        </div>
+        <div>
+          <label class="text-xs text-slate-500">WO (W5)</label>
+          <input id="wo" class="w-full px-3 py-2 rounded-lg border" />
+        </div>
+      </div>
+      <div class="grid md:grid-cols-3 grid-cols-1 gap-3">
+        <div>
+          <label class="text-xs text-slate-500">Cliente</label>
+          <select id="cliente" class="w-full px-3 py-2 rounded-lg border focus:outline-none focus:ring-2 focus:ring-sky-500">
+            <option value="">— Selecciona cliente —</option>
+            <option>DELTA</option><option>AMX</option><option>ENDEAVOR</option>
+            <option>JSX</option><option>PSA</option><option>SCY</option>
+            <option>AVELO</option><option>COPA</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs text-slate-500">Usuario Almacén (N5)</label>
+          <input id="usuarioAlmacen" class="w-full px-3 py-2 rounded-lg border" />
+        </div>
+        <div></div>
+      </div>
+
+      <div class="rounded-xl border bg-white overflow-hidden">
+        <div class="px-4 py-3 border-b bg-slate-50 font-semibold">Material</div>
+        <div class="overflow-auto">
+          <table class="min-w-full text-sm" id="tablaDespacho">
+            <thead class="bg-slate-100 text-slate-600">
+              <tr>
+                <th class="px-2 py-2 text-left w-28">Alerta</th>
+                <th class="px-2 py-2 text-left">Batch</th>
+                <th class="px-2 py-2 text-left">Material</th>
+                <th class="px-2 py-2 text-left">Material Description</th>
+                <th class="px-2 py-2 text-left">BUn</th>
+                <th class="px-2 py-2 text-left">MTyp</th>
+                <th class="px-2 py-2 text-left">SLoc</th>
+                <th class="px-2 py-2 text-left">Bin</th>
+                <th class="px-2 py-2 text-right">Sum of Unrestricted</th>
+                <th class="px-2 py-2 text-right">Cantidad</th>
+                <th class="px-2 py-2 text-left">REMARK</th>
+                <th class="px-2 py-2 text-left">COMENTARIOS</th>
+                <th class="px-2 py-2 text-center">DESPACHO</th>
+              </tr>
+            </thead>
+            <tbody id="bodyDespacho"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="flex items-center justify-between">
+        <p class="text-xs text-slate-500">Tip: si una fila muestra <span class="font-semibold text-rose-600">SIN STOCK</span> no podrá despacharse.</p>
+        <div class="flex gap-2">
+          <button id="btnBorrar" class="px-4 py-2 rounded-lg border">Borrar filas</button>
+          <button id="btnDespachar" class="px-4 py-2 rounded-lg bg-emerald-600 text-white">DESPACHAR MATERIAL</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- DESCARGAS -->
+    <section id="view-descargas" class="hidden">
+      <div class="rounded-xl border bg-white overflow-hidden">
+        <div class="flex items-center justify-between px-4 py-3 border-b bg-slate-50">
+          <div class="font-semibold">DESPACHOS REALIZADOS</div>
+          <div class="flex items-center gap-2">
+            <button id="btnExportarDescargas" class="px-3 py-1.5 rounded-lg border text-sm">Exportar CSV</button>
+          </div>
+        </div>
+        <div class="overflow-auto">
+          <table class="min-w-full text-sm" id="tablaDescargas">
+            <thead class="bg-slate-100 text-slate-600">
+              <tr>
+                <th class="px-2 py-2 text-left">MATRÍCULA</th>
+                <th class="px-2 py-2 text-left">CLIENTE</th>
+                <th class="px-2 py-2 text-left">NP</th>
+                <th class="px-2 py-2 text-left">DESCRIPCIÓN</th>
+                <th class="px-2 py-2 text-left">W.O.</th>
+                <th class="px-2 py-2 text-right">CANTIDAD</th>
+                <th class="px-2 py-2 text-left">UM</th>
+                <th class="px-2 py-2 text-left">SLOC</th>
+                <th class="px-2 py-2 text-left">BATCH</th>
+                <th class="px-2 py-2 text-left">N.E. TÉCNICO</th>
+                <th class="px-2 py-2 text-left">USUARIO ALMACÉN</th>
+                <th class="px-2 py-2 text-left">FECHA</th>
+                <th class="px-2 py-2 text-left">COMENTARIO</th>
+              </tr>
+            </thead>
+            <tbody id="bodyDescargas"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 hidden">
+    <div class="bg-emerald-600 text-white px-4 py-2 rounded-lg shadow-lg">Tu despacho ha sido completado</div>
+  </div>
+
+  <script>
+    // ---------- util ----------
+    const API = (window.API_BASE || "/api").replace(/\/+$/,"");
+    const $ = (s, ctx=document) => ctx.querySelector(s);
+    const fmt = n => Number(n||0).toLocaleString('es-MX', { maximumFractionDigits: 2 });
+
+    let filasDespacho = [];
+    let currentTab = 'despacho';
+    let NP_ACTUAL = "";
+
+    function toast(msg) {
+      const t = $('#toast'); t.firstElementChild.textContent = msg;
+      t.classList.remove('hidden'); setTimeout(() => t.classList.add('hidden'), 1600);
+    }
+
+    // ---------- backend helpers con fallback local ----------
+    async function fetchJSON(url) {
+      try { const r = await fetch(url, { cache: 'no-store' }); if (r.ok) return await r.json(); }
+      catch {}
+      return null;
+    }
+
+    async function getStockFromBackend(np) {
+      return await fetchJSON(`${API}/stock?np=${encodeURIComponent(np)}`);
+    }
+
+    function stockFromLocal(np) {
+      const base = (typeof STOCK_DATA !== 'undefined' && Array.isArray(STOCK_DATA)) ? STOCK_DATA : [];
+      const rows = base.filter(r => String(r.Material||'').toUpperCase() === String(np||'').toUpperCase());
+      const map = new Map();
+      for (const r of rows) {
+        const key = `${r.Bin}|${r.SLoc}|${r.Batch}`;
+        const cur = map.get(key) || { ...r, Unrestricted: Number(r.Unrestricted||0) };
+        cur.Unrestricted = Number(cur.Unrestricted||0) + Number(r.Unrestricted||0);
+        // En local no sabemos descargas globales → disponible = Unrestricted (solo consulta)
+        cur.disponible = cur.Unrestricted;
+        map.set(key, cur);
+      }
+      return Array.from(map.values());
+    }
+
+    async function fetchStock(np) {
+      // intenta backend, si no responde usa local
+      const fromBE = await getStockFromBackend(np);
+      return (fromBE && Array.isArray(fromBE)) ? fromBE : stockFromLocal(np);
+    }
+
+    async function fetchDescargas() {
+      const j = await fetchJSON(`${API}/descargas.json`);
+      return Array.isArray(j) ? j : [];
+    }
+
+    async function postRecord(rec) {
+      try {
+        const r = await fetch(`${API}/records`, {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(rec)
+        });
+        return r;
+      } catch { return { ok:false, json: async()=>({ error:"Backend no disponible" }) }; }
+    }
+
+    // ---------- UI render ----------
+    function renderDespacho() {
+      const tb = $('#bodyDespacho'); tb.innerHTML = '';
+      for (const f of filasDespacho) {
+        const danger = (f.disponible <= 0) || (f.qty > 0 && f.qty > f.disponible);
+        const alerta = danger ? 'SIN STOCK' : '';
+        tb.insertAdjacentHTML('beforeend', `
+          <tr class="border-b ${danger ? 'bg-rose-50' : ''} hover:bg-sky-50">
+            <td class="px-2 py-1 text-rose-600 font-semibold">${alerta}</td>
+            <td class="px-2 py-1">${f.Batch || ''}</td>
+            <td class="px-2 py-1">${f.Material}</td>
+            <td class="px-2 py-1">${f["Material Description"] || ''}</td>
+            <td class="px-2 py-1">${f.BUn || ''}</td>
+            <td class="px-2 py-1">${f.MTyp || ''}</td>
+            <td class="px-2 py-1">${f.SLoc || ''}</td>
+            <td class="px-2 py-1">${f.Bin || ''}</td>
+            <td class="px-2 py-1 text-right">${fmt(f.Unrestricted)} <span class="text-xs text-slate-500">(disp: ${fmt(f.disponible)})</span></td>
+            <td class="px-2 py-1 text-right">
+              <input type="number" min="0" step="1" value="${f.qty||0}" data-k="${f._k}" class="qty w-20 px-2 py-1 rounded-md border text-right" />
+            </td>
+            <td class="px-2 py-1">${f.REMARK || ''}</td>
+            <td class="px-2 py-1">
+              <input data-k="${f._k}" class="coment w-56 px-2 py-1 rounded-md border" placeholder="Comentario" value="${f.comentario || ''}" />
+            </td>
+            <td class="px-2 py-1 text-center">
+              <input type="checkbox" data-k="${f._k}" class="chk w-5 h-5" ${f.check ? 'checked' : ''} ${danger ? 'disabled' : ''} />
+            </td>
+          </tr>
+        `);
+      }
+      // binds
+      $('#bodyDespacho').querySelectorAll('.qty').forEach(inp => {
+        const k = inp.dataset.k;
+        inp.addEventListener('input', e => {
+          const row = filasDespacho.find(x => x._k === k);
+          row.qty = Math.floor(Number(e.target.value||0));
+        });
+        inp.addEventListener('change', refreshDisponibilidad);
+      });
+      $('#bodyDespacho').querySelectorAll('.coment').forEach(inp => {
+        const k = inp.dataset.k;
+        inp.addEventListener('input', e => {
+          const row = filasDespacho.find(x => x._k === k);
+          row.comentario = e.target.value;
+        });
+      });
+      $('#bodyDespacho').querySelectorAll('.chk').forEach(inp => {
+        const k = inp.dataset.k;
+        inp.addEventListener('change', e => {
+          const row = filasDespacho.find(x => x._k === k);
+          row.check = e.target.checked;
+        });
+      });
+    }
+
+    async function renderDescargas() {
+      const data = await fetchDescargas();
+      const tb = $('#bodyDescargas'); tb.innerHTML = '';
+      for (const r of data) {
+        tb.insertAdjacentHTML('beforeend', `
+          <tr class="border-b hover:bg-sky-50">
+            <td class="px-2 py-1">${r.matricula || ''}</td>
+            <td class="px-2 py-1">${r.cliente || ''}</td>
+            <td class="px-2 py-1">${r.np || ''}</td>
+            <td class="px-2 py-1">${r.descripcion || ''}</td>
+            <td class="px-2 py-1">${r.wo || ''}</td>
+            <td class="px-2 py-1 text-right">${r.cantidad ?? 0}</td>
+            <td class="px-2 py-1">${r.um || ''}</td>
+            <td class="px-2 py-1">${r.sloc || ''}</td>
+            <td class="px-2 py-1">${r.batch || ''}</td>
+            <td class="px-2 py-1">${r.neTecnico || ''}</td>
+            <td class="px-2 py-1">${r.usuarioAlmacen || ''}</td>
+            <td class="px-2 py-1">${r.fecha || ''}</td>
+            <td class="px-2 py-1">${r.comentario || ''}</td>
+          </tr>
+        `);
+      }
+    }
+
+    // ---------- acciones ----------
+    async function buscar() {
+      const np = $('#np').value.trim(); NP_ACTUAL = np;
+      if (!np) { filasDespacho=[]; renderDespacho(); return; }
+      const items = await fetchStock(np);
+      filasDespacho = items.map((r, i) => ({ ...r, qty: 0, comentario: "", check:false, _k: `${r.Bin}|${r.SLoc}|${r.Batch}|${i}` }));
+      renderDespacho();
+    }
+
+    async function refreshDisponibilidad() {
+      if (!NP_ACTUAL) return;
+      const items = await getStockFromBackend(NP_ACTUAL); // solo backend; si falla, mantenemos el último valor
+      if (!items) return;
+      const map = new Map(items.map(r => [`${r.Bin}|${r.SLoc}|${r.Batch}`, r]));
+      for (const row of filasDespacho) {
+        const base = map.get(`${row.Bin}|${row.SLoc}|${row.Batch}`);
+        if (base) {
+          row.Unrestricted = base.Unrestricted;
+          row.disponible = base.disponible;
+        }
+      }
+      renderDespacho();
+    }
+
+    async function despachar() {
+      const matricula = $('#matricula').value.trim();
+      const neTecnico = $('#neTecnico').value.trim();
+      const usuarioAlmacen = $('#usuarioAlmacen').value.trim();
+      const wo = $('#wo').value.trim();
+      const cliente = $('#cliente').value;
+
+      const seleccionados = filasDespacho.filter(f => f.check && f.qty > 0);
+      if (!seleccionados.length) return;
+
+      let okCount = 0, failCount = 0, lastErr = "";
+      for (const f of seleccionados) {
+        const rec = {
+          matricula, cliente,
+          np: f.Material,
+          descripcion: f["Material Description"] || "",
+          wo, cantidad: Math.floor(Number(f.qty||0)),
+          um: f.BUn, sloc: f.SLoc, batch: f.Batch,
+          neTecnico, usuarioAlmacen,
+          fecha: new Date().toISOString().replace('T',' ').slice(0,16),
+          comentario: f.comentario || "",
+          material: f.Material
+        };
+        const res = await postRecord(rec);
+        if (res.ok) okCount++; else { failCount++; try { const j = await res.json(); lastErr = j.error || "Error"; } catch {} }
+      }
+      filasDespacho = filasDespacho.filter(f => !(f.check && f.qty>0));
+      await refreshDisponibilidad();
+      renderDespacho();
+
+      toast(okCount ? `Sincronizado (${okCount})` : (failCount ? `Error: ${lastErr}` : 'Nada que despachar'));
+    }
+
+    function switchTab(tab) {
+      currentTab = tab;
+      document.querySelectorAll('#tabs .tab-btn').forEach(btn => {
+        btn.classList.remove('bg-sky-600','text-white');
+        btn.classList.add('bg-white','text-slate-700','border');
+      });
+      document.querySelector(`[data-tab="${tab}"]`).classList.add('bg-sky-600','text-white');
+      document.querySelector(`[data-tab="${tab}"]`).classList.remove('bg-white','text-slate-700','border');
+      document.querySelectorAll('section[id^="view-"]').forEach(sec => sec.classList.add('hidden'));
+      document.getElementById('view-'+tab).classList.remove('hidden');
+      if (tab === 'descargas') renderDescargas();
+    }
+
+    function connectSSE() {
+      try {
+        const src = new EventSource(`${API}/events`);
+        src.addEventListener("descarga:new", async e => {
+          if (NP_ACTUAL) await refreshDisponibilidad();
+          if (currentTab === 'descargas') renderDescargas();
+        });
+        src.addEventListener("stock:update", async e => { if (NP_ACTUAL) await refreshDisponibilidad(); });
+        src.addEventListener("stock:reloaded", async e => { if (NP_ACTUAL) await buscar(); });
+        src.onerror = () => { /* el navegador reintenta solo */ };
+      } catch { /* sin SSE (local) */ }
+    }
+
+    // ---------- init ----------
+    (function(){
+      $('#btnBuscar').addEventListener('click', buscar);
+      $('#np').addEventListener('keydown', e => { if (e.key === 'Enter') buscar(); });
+      $('#btnDespachar').addEventListener('click', despachar);
+      $('#btnBorrar').addEventListener('click', () => { filasDespacho=[]; $('#np').value=''; renderDespacho(); });
+      $('#btnExportarDescargas').addEventListener('click', () => { window.location.href = `${API}/descargas`; });
+      document.querySelectorAll('#tabs .tab-btn').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
+      connectSSE();
+    })();
+  </script>
+</body>
+</html>
