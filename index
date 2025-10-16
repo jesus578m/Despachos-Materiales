@@ -1,22 +1,28 @@
-<!DOCTYPE html> 
+<!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Despacho de Materiales</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <style>
-    ::-webkit-scrollbar{height:8px;width:8px}
-    ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:6px}
-  </style>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Despacho de Materiales</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  ::-webkit-scrollbar{height:8px;width:8px}
+  ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:6px}
+</style>
 
-  <!-- 🔧 Cambia esta URL a tu Worker -->
-  <script>
-    window.API_BASE = "https://tu-worker.workers.dev/api";
-  </script>
+<!-- === CONFIG GITHUB (ajusta esto) =============================== -->
+<script>
+  window.GH = {
+    owner:  "jesus578m",
+    repo:   "Despachos-Materiales",
+    branch: "main",
+    token:  "" // ← Pega tu token si quieres ESCRITURA; déjalo "" para solo lectura
+  };
+</script>
+<!-- ============================================================== -->
 
-  <!-- Tu base local (seed + fallback) -->
-  <script src="stock-data.js"></script>
+<!-- Tu base local -->
+<script src="stock-data.js"></script>
 </head>
 <body class="bg-slate-50 text-slate-900">
   <div class="max-w-[1200px] mx-auto p-4">
@@ -108,6 +114,7 @@
         <div class="flex items-center justify-between px-4 py-3 border-b bg-slate-50">
           <div class="font-semibold">DESPACHOS REALIZADOS</div>
           <div class="flex items-center gap-2">
+            <button id="btnLimpiarLocal" class="px-3 py-1.5 rounded-lg border text-sm">Limpiar caché local</button>
             <button id="btnExportarDescargas" class="px-3 py-1.5 rounded-lg border text-sm">Exportar CSV</button>
           </div>
         </div>
@@ -139,242 +146,252 @@
 
   <!-- Toast -->
   <div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 hidden">
-    <div class="bg-emerald-600 text-white px-4 py-2 rounded-lg shadow-lg">Tu despacho ha sido completado</div>
+    <div class="bg-emerald-600 text-white px-4 py-2 rounded-lg shadow-lg">OK</div>
   </div>
 
-  <script>
-    // ---------- util ----------
-    const API = (window.API_BASE || "/api").replace(/\/+$/,"");
-    const $ = (s, ctx=document) => ctx.querySelector(s);
-    const fmt = n => Number(n||0).toLocaleString('es-MX', { maximumFractionDigits: 2 });
+<script>
+/* ===== Util ===== */
+const $ = (s,ctx=document)=>ctx.querySelector(s);
+const fmt = n => Number(n||0).toLocaleString('es-MX',{maximumFractionDigits:2});
+const toNum = v => Number(String(v??"").replace(/[^\d.-]/g,""))||0;
 
-    let filasDespacho = [];
-    let currentTab = 'despacho';
-    let NP_ACTUAL = "";
+function toast(msg){const t=$('#toast');t.firstElementChild.textContent=msg;t.classList.remove('hidden');setTimeout(()=>t.classList.add('hidden'),1400);}
 
-    function toast(msg) {
-      const t = $('#toast'); t.firstElementChild.textContent = msg;
-      t.classList.remove('hidden'); setTimeout(() => t.classList.add('hidden'), 1600);
-    }
+/* ===== Config GitHub ===== */
+const GH = window.GH || {};
+const RAW1 = `https://raw.githubusercontent.com/${GH.owner}/${GH.repo}/${GH.branch}/descargas.json`;
+const RAW2 = `https://cdn.jsdelivr.net/gh/${GH.owner}/${GH.repo}@${GH.branch}/descargas.json`;
+const API_GET = `https://api.github.com/repos/${GH.owner}/${GH.repo}/contents/descargas.json?ref=${GH.branch}`;
+const API_PUT = `https://api.github.com/repos/${GH.owner}/${GH.repo}/contents/descargas.json`;
 
-    // ---------- backend helpers con fallback local ----------
-    async function fetchJSON(url) {
-      try { const r = await fetch(url, { cache: 'no-store' }); if (r.ok) return await r.json(); }
-      catch {}
-      return null;
-    }
+let DESC_SHARED = [];   // lo del repo
+let DESC_LOCAL  = [];   // fallback localStorage (por si no hay token)
+/* cache local para no perder registros si falla escritura remota */
+function loadLocal(){ try{ DESC_LOCAL = JSON.parse(localStorage.getItem('desc_local_v1')||'[]'); }catch{DESC_LOCAL=[];} }
+function saveLocal(){ localStorage.setItem('desc_local_v1', JSON.stringify(DESC_LOCAL)); }
 
-    async function getStockFromBackend(np) {
-      return await fetchJSON(`${API}/stock?np=${encodeURIComponent(np)}`);
-    }
+/* ===== Lectura periódica del repo ===== */
+async function pullShared(){
+  const urls = [RAW1, RAW2];
+  for (const u of urls) {
+    try { const r = await fetch(u+'?t='+Date.now(),{cache:'no-store'}); if (r.ok) { const j=await r.json(); if(Array.isArray(j)){ DESC_SHARED=j; return; } } }
+    catch {}
+  }
+  DESC_SHARED = []; // si no carga, no frena UI
+}
 
-    function stockFromLocal(np) {
-      const base = (typeof STOCK_DATA !== 'undefined' && Array.isArray(STOCK_DATA)) ? STOCK_DATA : [];
-      const rows = base.filter(r => String(r.Material||'').toUpperCase() === String(np||'').toUpperCase());
-      const map = new Map();
-      for (const r of rows) {
-        const key = `${r.Bin}|${r.SLoc}|${r.Batch}`;
-        const cur = map.get(key) || { ...r, Unrestricted: Number(r.Unrestricted||0) };
-        cur.Unrestricted = Number(cur.Unrestricted||0) + Number(r.Unrestricted||0);
-        // En local no sabemos descargas globales → disponible = Unrestricted (solo consulta)
-        cur.disponible = cur.Unrestricted;
-        map.set(key, cur);
-      }
-      return Array.from(map.values());
-    }
+/* ===== Escritura (con token) ===== */
+async function pushMergedToGitHub(merged){
+  if (!GH.token) return false;
+  try{
+    // 1) leer sha actual
+    const m = await fetch(API_GET, { headers: {'Accept':'application/vnd.github+json','Authorization':`Bearer ${GH.token}`}});
+    const meta = m.ok ? await m.json() : null;
+    const sha = meta?.sha;
 
-    async function fetchStock(np) {
-      // intenta backend, si no responde usa local
-      const fromBE = await getStockFromBackend(np);
-      return (fromBE && Array.isArray(fromBE)) ? fromBE : stockFromLocal(np);
-    }
+    // 2) subir contenido
+    const content = btoa(unescape(encodeURIComponent(JSON.stringify(merged, null, 2))));
+    const body = { message:`chore: update descargas ${new Date().toISOString()}`, content, branch: GH.branch, sha };
+    const p = await fetch(API_PUT, {
+      method:'PUT',
+      headers:{'Accept':'application/vnd.github+json','Authorization':`Bearer ${GH.token}`,'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    return p.ok;
+  }catch(e){ return false; }
+}
 
-    async function fetchDescargas() {
-      const j = await fetchJSON(`${API}/descargas.json`);
-      return Array.isArray(j) ? j : [];
-    }
+/* ===== Stock helpers ===== */
+const STOCK = Array.isArray(window.STOCK_DATA)? window.STOCK_DATA : [];
+function stockPorNP(np){
+  const rows = STOCK.filter(r => String(r.Material||'').toUpperCase()===String(np||'').toUpperCase());
+  const map = new Map();
+  for (const r of rows){
+    const key = `${r.Bin}|${r.SLoc}|${r.Batch}`;
+    const cur = map.get(key) || { ...r, Unrestricted: toNum(r.Unrestricted) };
+    cur.Unrestricted += toNum(r.Unrestricted);
+    map.set(key, cur);
+  }
+  return [...map.values()];
+}
+function sumDespachado(material, sloc, batch, arr){
+  return (arr||[]).filter(x => x.material===material && x.sloc===sloc && x.batch===batch)
+                  .reduce((s,x)=>s + Number(x.cantidad||0), 0);
+}
 
-    async function postRecord(rec) {
-      try {
-        const r = await fetch(`${API}/records`, {
-          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(rec)
-        });
-        return r;
-      } catch { return { ok:false, json: async()=>({ error:"Backend no disponible" }) }; }
-    }
+/* ===== Estado/UI ===== */
+let filasDespacho = [];
+let NP_ACTUAL = "";
+let currentTab = "despacho";
 
-    // ---------- UI render ----------
-    function renderDespacho() {
-      const tb = $('#bodyDespacho'); tb.innerHTML = '';
-      for (const f of filasDespacho) {
-        const danger = (f.disponible <= 0) || (f.qty > 0 && f.qty > f.disponible);
-        const alerta = danger ? 'SIN STOCK' : '';
-        tb.insertAdjacentHTML('beforeend', `
-          <tr class="border-b ${danger ? 'bg-rose-50' : ''} hover:bg-sky-50">
-            <td class="px-2 py-1 text-rose-600 font-semibold">${alerta}</td>
-            <td class="px-2 py-1">${f.Batch || ''}</td>
-            <td class="px-2 py-1">${f.Material}</td>
-            <td class="px-2 py-1">${f["Material Description"] || ''}</td>
-            <td class="px-2 py-1">${f.BUn || ''}</td>
-            <td class="px-2 py-1">${f.MTyp || ''}</td>
-            <td class="px-2 py-1">${f.SLoc || ''}</td>
-            <td class="px-2 py-1">${f.Bin || ''}</td>
-            <td class="px-2 py-1 text-right">${fmt(f.Unrestricted)} <span class="text-xs text-slate-500">(disp: ${fmt(f.disponible)})</span></td>
-            <td class="px-2 py-1 text-right">
-              <input type="number" min="0" step="1" value="${f.qty||0}" data-k="${f._k}" class="qty w-20 px-2 py-1 rounded-md border text-right" />
-            </td>
-            <td class="px-2 py-1">${f.REMARK || ''}</td>
-            <td class="px-2 py-1">
-              <input data-k="${f._k}" class="coment w-56 px-2 py-1 rounded-md border" placeholder="Comentario" value="${f.comentario || ''}" />
-            </td>
-            <td class="px-2 py-1 text-center">
-              <input type="checkbox" data-k="${f._k}" class="chk w-5 h-5" ${f.check ? 'checked' : ''} ${danger ? 'disabled' : ''} />
-            </td>
-          </tr>
-        `);
-      }
-      // binds
-      $('#bodyDespacho').querySelectorAll('.qty').forEach(inp => {
-        const k = inp.dataset.k;
-        inp.addEventListener('input', e => {
-          const row = filasDespacho.find(x => x._k === k);
-          row.qty = Math.floor(Number(e.target.value||0));
-        });
-        inp.addEventListener('change', refreshDisponibilidad);
-      });
-      $('#bodyDespacho').querySelectorAll('.coment').forEach(inp => {
-        const k = inp.dataset.k;
-        inp.addEventListener('input', e => {
-          const row = filasDespacho.find(x => x._k === k);
-          row.comentario = e.target.value;
-        });
-      });
-      $('#bodyDespacho').querySelectorAll('.chk').forEach(inp => {
-        const k = inp.dataset.k;
-        inp.addEventListener('change', e => {
-          const row = filasDespacho.find(x => x._k === k);
-          row.check = e.target.checked;
-        });
-      });
-    }
+function recomputeDisponible(){
+  const all = [...DESC_SHARED, ...DESC_LOCAL];
+  for (const row of filasDespacho){
+    const ya = sumDespachado(row.Material, row.SLoc, row.Batch, all);
+    row.disponible = toNum(row.Unrestricted) - ya;
+  }
+}
 
-    async function renderDescargas() {
-      const data = await fetchDescargas();
-      const tb = $('#bodyDescargas'); tb.innerHTML = '';
-      for (const r of data) {
-        tb.insertAdjacentHTML('beforeend', `
-          <tr class="border-b hover:bg-sky-50">
-            <td class="px-2 py-1">${r.matricula || ''}</td>
-            <td class="px-2 py-1">${r.cliente || ''}</td>
-            <td class="px-2 py-1">${r.np || ''}</td>
-            <td class="px-2 py-1">${r.descripcion || ''}</td>
-            <td class="px-2 py-1">${r.wo || ''}</td>
-            <td class="px-2 py-1 text-right">${r.cantidad ?? 0}</td>
-            <td class="px-2 py-1">${r.um || ''}</td>
-            <td class="px-2 py-1">${r.sloc || ''}</td>
-            <td class="px-2 py-1">${r.batch || ''}</td>
-            <td class="px-2 py-1">${r.neTecnico || ''}</td>
-            <td class="px-2 py-1">${r.usuarioAlmacen || ''}</td>
-            <td class="px-2 py-1">${r.fecha || ''}</td>
-            <td class="px-2 py-1">${r.comentario || ''}</td>
-          </tr>
-        `);
-      }
-    }
+function renderDespacho(){
+  const tb = $('#bodyDespacho'); tb.innerHTML='';
+  for (const f of filasDespacho){
+    const danger = (f.disponible<=0) || (f.qty>0 && f.qty>f.disponible);
+    tb.insertAdjacentHTML('beforeend', `
+      <tr class="border-b ${danger?'bg-rose-50':''} hover:bg-sky-50 transition-colors">
+        <td class="px-2 py-1 text-rose-600 font-semibold">${danger?'SIN STOCK':''}</td>
+        <td class="px-2 py-1">${f.Batch||''}</td>
+        <td class="px-2 py-1">${f.Material}</td>
+        <td class="px-2 py-1">${f["Material Description"]||''}</td>
+        <td class="px-2 py-1">${f.BUn||''}</td>
+        <td class="px-2 py-1">${f.MTyp||''}</td>
+        <td class="px-2 py-1">${f.SLoc||''}</td>
+        <td class="px-2 py-1">${f.Bin||''}</td>
+        <td class="px-2 py-1 text-right">${fmt(f.Unrestricted)} <span class="text-xs text-slate-500">(disp: ${fmt(f.disponible)})</span></td>
+        <td class="px-2 py-1 text-right">
+          <input type="number" min="0" step="1" value="${f.qty||0}" data-k="${f._k}" class="qty w-20 px-2 py-1 rounded-md border text-right"/>
+        </td>
+        <td class="px-2 py-1">${f.REMARK||''}</td>
+        <td class="px-2 py-1"><input data-k="${f._k}" class="coment w-56 px-2 py-1 rounded-md border" placeholder="Comentario" value="${f.comentario||''}"/></td>
+        <td class="px-2 py-1 text-center">
+          <input type="checkbox" data-k="${f._k}" class="chk w-5 h-5" ${f.check?'checked':''} ${danger?'disabled':''}/>
+        </td>
+      </tr>
+    `);
+  }
+  // binds
+  $('#bodyDespacho').querySelectorAll('.qty').forEach(inp=>{
+    const k=inp.dataset.k; inp.addEventListener('input',e=>{ const r=filasDespacho.find(x=>x._k===k); r.qty=Math.floor(toNum(e.target.value)); });
+  });
+  $('#bodyDespacho').querySelectorAll('.coment').forEach(inp=>{
+    const k=inp.dataset.k; inp.addEventListener('input',e=>{ const r=filasDespacho.find(x=>x._k===k); r.comentario=e.target.value; });
+  });
+  $('#bodyDespacho').querySelectorAll('.chk').forEach(inp=>{
+    const k=inp.dataset.k; inp.addEventListener('change',e=>{ const r=filasDespacho.find(x=>x._k===k); r.check=e.target.checked; });
+  });
+}
 
-    // ---------- acciones ----------
-    async function buscar() {
-      const np = $('#np').value.trim(); NP_ACTUAL = np;
-      if (!np) { filasDespacho=[]; renderDespacho(); return; }
-      const items = await fetchStock(np);
-      filasDespacho = items.map((r, i) => ({ ...r, qty: 0, comentario: "", check:false, _k: `${r.Bin}|${r.SLoc}|${r.Batch}|${i}` }));
-      renderDespacho();
-    }
+async function buscar(){
+  const np = $('#np').value.trim(); NP_ACTUAL=np;
+  if(!np){ filasDespacho=[]; renderDespacho(); return; }
+  const base = stockPorNP(np);
+  filasDespacho = base.map((r,i)=>({ ...r, qty:0, comentario:"", check:false, _k:`${r.Bin}|${r.SLoc}|${r.Batch}|${i}` }));
+  recomputeDisponible();
+  renderDespacho();
+}
 
-    async function refreshDisponibilidad() {
-      if (!NP_ACTUAL) return;
-      const items = await getStockFromBackend(NP_ACTUAL); // solo backend; si falla, mantenemos el último valor
-      if (!items) return;
-      const map = new Map(items.map(r => [`${r.Bin}|${r.SLoc}|${r.Batch}`, r]));
-      for (const row of filasDespacho) {
-        const base = map.get(`${row.Bin}|${row.SLoc}|${row.Batch}`);
-        if (base) {
-          row.Unrestricted = base.Unrestricted;
-          row.disponible = base.disponible;
-        }
-      }
-      renderDespacho();
-    }
+async function despachar(){
+  const matricula=$('#matricula').value.trim();
+  const neTecnico=$('#neTecnico').value.trim();
+  const usuarioAlmacen=$('#usuarioAlmacen').value.trim();
+  const wo=$('#wo').value.trim();
+  const cliente=$('#cliente').value;
 
-    async function despachar() {
-      const matricula = $('#matricula').value.trim();
-      const neTecnico = $('#neTecnico').value.trim();
-      const usuarioAlmacen = $('#usuarioAlmacen').value.trim();
-      const wo = $('#wo').value.trim();
-      const cliente = $('#cliente').value;
+  const nuevos=[];
+  for (const f of filasDespacho){
+    const peligro = (f.disponible<=0) || (f.qty>0 && f.qty>f.disponible);
+    if (!f.check || !f.qty || peligro) continue;
+    nuevos.push({
+      matricula, cliente, np: f.Material,
+      descripcion: f["Material Description"]||"",
+      wo, cantidad: Math.floor(toNum(f.qty)), um: f.BUn,
+      sloc: f.SLoc, batch: f.Batch,
+      neTecnico, usuarioAlmacen,
+      fecha: new Date().toISOString().replace('T',' ').slice(0,16),
+      comentario: f.comentario||"",
+      material: f.Material
+    });
+  }
+  if (!nuevos.length) return;
 
-      const seleccionados = filasDespacho.filter(f => f.check && f.qty > 0);
-      if (!seleccionados.length) return;
+  // 1) Añade a caché local para no perderlos si falla
+  loadLocal(); DESC_LOCAL = DESC_LOCAL.concat(nuevos); saveLocal();
 
-      let okCount = 0, failCount = 0, lastErr = "";
-      for (const f of seleccionados) {
-        const rec = {
-          matricula, cliente,
-          np: f.Material,
-          descripcion: f["Material Description"] || "",
-          wo, cantidad: Math.floor(Number(f.qty||0)),
-          um: f.BUn, sloc: f.SLoc, batch: f.Batch,
-          neTecnico, usuarioAlmacen,
-          fecha: new Date().toISOString().replace('T',' ').slice(0,16),
-          comentario: f.comentario || "",
-          material: f.Material
-        };
-        const res = await postRecord(rec);
-        if (res.ok) okCount++; else { failCount++; try { const j = await res.json(); lastErr = j.error || "Error"; } catch {} }
-      }
-      filasDespacho = filasDespacho.filter(f => !(f.check && f.qty>0));
-      await refreshDisponibilidad();
-      renderDespacho();
+  // 2) Empuja al repo si hay token
+  let pushed = false;
+  if (GH.token){
+    await pullShared(); // lee lo último
+    const merged = (DESC_SHARED||[]).concat(DESC_LOCAL||[]);
+    pushed = await pushMergedToGitHub(merged);
+  }
 
-      toast(okCount ? `Sincronizado (${okCount})` : (failCount ? `Error: ${lastErr}` : 'Nada que despachar'));
-    }
+  // 3) Si subió, limpia cache local
+  if (pushed){ DESC_LOCAL = []; saveLocal(); toast('Sincronizado'); }
+  else { toast('Guardado local (sin token o error)'); }
 
-    function switchTab(tab) {
-      currentTab = tab;
-      document.querySelectorAll('#tabs .tab-btn').forEach(btn => {
-        btn.classList.remove('bg-sky-600','text-white');
-        btn.classList.add('bg-white','text-slate-700','border');
-      });
-      document.querySelector(`[data-tab="${tab}"]`).classList.add('bg-sky-600','text-white');
-      document.querySelector(`[data-tab="${tab}"]`).classList.remove('bg-white','text-slate-700','border');
-      document.querySelectorAll('section[id^="view-"]').forEach(sec => sec.classList.add('hidden'));
-      document.getElementById('view-'+tab).classList.remove('hidden');
-      if (tab === 'descargas') renderDescargas();
-    }
+  // Limpia seleccionados de la tabla
+  filasDespacho = filasDespacho.filter(f => !(f.check && f.qty));
+  await refreshAll(); // recomputa y redibuja
+}
 
-    function connectSSE() {
-      try {
-        const src = new EventSource(`${API}/events`);
-        src.addEventListener("descarga:new", async e => {
-          if (NP_ACTUAL) await refreshDisponibilidad();
-          if (currentTab === 'descargas') renderDescargas();
-        });
-        src.addEventListener("stock:update", async e => { if (NP_ACTUAL) await refreshDisponibilidad(); });
-        src.addEventListener("stock:reloaded", async e => { if (NP_ACTUAL) await buscar(); });
-        src.onerror = () => { /* el navegador reintenta solo */ };
-      } catch { /* sin SSE (local) */ }
-    }
+async function refreshAll(){
+  await pullShared();
+  recomputeDisponible();
+  renderDespacho();
+  if (currentTab==='descargas') renderDescargas();
+}
 
-    // ---------- init ----------
-    (function(){
-      $('#btnBuscar').addEventListener('click', buscar);
-      $('#np').addEventListener('keydown', e => { if (e.key === 'Enter') buscar(); });
-      $('#btnDespachar').addEventListener('click', despachar);
-      $('#btnBorrar').addEventListener('click', () => { filasDespacho=[]; $('#np').value=''; renderDespacho(); });
-      $('#btnExportarDescargas').addEventListener('click', () => { window.location.href = `${API}/descargas`; });
-      document.querySelectorAll('#tabs .tab-btn').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
-      connectSSE();
-    })();
-  </script>
+function renderDescargas(){
+  const all = (DESC_SHARED||[]).concat(DESC_LOCAL||[]);
+  const tb = $('#bodyDescargas'); tb.innerHTML='';
+  for (const r of all){
+    tb.insertAdjacentHTML('beforeend', `
+      <tr class="border-b hover:bg-sky-50">
+        <td class="px-2 py-1">${r.matricula||''}</td>
+        <td class="px-2 py-1">${r.cliente||''}</td>
+        <td class="px-2 py-1">${r.np||''}</td>
+        <td class="px-2 py-1">${r.descripcion||''}</td>
+        <td class="px-2 py-1">${r.wo||''}</td>
+        <td class="px-2 py-1 text-right">${r.cantidad??0}</td>
+        <td class="px-2 py-1">${r.um||''}</td>
+        <td class="px-2 py-1">${r.sloc||''}</td>
+        <td class="px-2 py-1">${r.batch||''}</td>
+        <td class="px-2 py-1">${r.neTecnico||''}</td>
+        <td class="px-2 py-1">${r.usuarioAlmacen||''}</td>
+        <td class="px-2 py-1">${r.fecha||''}</td>
+        <td class="px-2 py-1">${r.comentario||''}</td>
+      </tr>
+    `);
+  }
+}
+
+/* ===== Tabs / botones ===== */
+function switchTab(tab){
+  currentTab=tab;
+  document.querySelectorAll('#tabs .tab-btn').forEach(b=>{ b.classList.remove('bg-sky-600','text-white'); b.classList.add('bg-white','text-slate-700','border'); });
+  const btn = document.querySelector(`[data-tab="${tab}"]`);
+  btn.classList.add('bg-sky-600','text-white'); btn.classList.remove('bg-white','text-slate-700','border');
+  document.querySelectorAll('section[id^="view-"]').forEach(sec=>sec.classList.add('hidden'));
+  document.getElementById('view-'+tab).classList.remove('hidden');
+  if (tab==='descargas') renderDescargas();
+}
+
+function exportCSV(){
+  const all = (DESC_SHARED||[]).concat(DESC_LOCAL||[]);
+  const cols = ["matricula","cliente","np","descripcion","wo","cantidad","um","sloc","batch","neTecnico","usuarioAlmacen","fecha","comentario"];
+  const esc = v => `"${String(v??"").replaceAll(`"`,`""`)}"`;
+  const csv = [cols.join(",")].concat(all.map(r=>cols.map(c=>esc(r[c])).join(","))).join("\n");
+  const blob = new Blob([csv],{type:"text/csv;charset=utf-8"});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'descargas.csv'; a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* ===== Init ===== */
+(async function init(){
+  loadLocal();
+  await refreshAll();
+
+  $('#btnBuscar').addEventListener('click', buscar);
+  $('#np').addEventListener('keydown', e => { if (e.key==='Enter') buscar(); });
+  $('#btnDespachar').addEventListener('click', despachar);
+  $('#btnBorrar').addEventListener('click', ()=>{ filasDespacho=[]; $('#np').value=''; renderDespacho(); });
+  $('#btnExportarDescargas').addEventListener('click', exportCSV);
+  $('#btnLimpiarLocal').addEventListener('click', ()=>{ if(confirm('¿Vaciar caché local?')){ DESC_LOCAL=[]; saveLocal(); refreshAll(); }});
+  document.querySelectorAll('#tabs .tab-btn').forEach(btn=>btn.addEventListener('click',()=>switchTab(btn.dataset.tab)));
+
+  // "casi tiempo real": refresca repo cada 2s
+  setInterval(refreshAll, 2000);
+})();
+</script>
 </body>
 </html>
+
