@@ -8,34 +8,49 @@
 <style>
   ::-webkit-scrollbar{height:8px;width:8px}
   ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:6px}
+  body{font-family:Inter,system-ui,sans-serif}
 </style>
 
-<!-- === CONFIG GITHUB (ajusta esto) =============================== -->
+<!-- === CONFIG GITHUB (ajusta si lo deseas) ====================== -->
 <script>
   window.GH = {
     owner:  "jesus578m",
     repo:   "Despachos-Materiales",
     branch: "main",
-    token:  "" // ← Pega tu token si quieres ESCRITURA; déjalo "" para solo lectura
+    token:  "" // ← (opcional) Fine-grained token con "Repository contents: Read/Write" para este repo
   };
 </script>
 <!-- ============================================================== -->
 
-<!-- Tu base local -->
-<script src="stock-data.js"></script>
+<!-- CARGA ROBUSTA DEL STOCK (ESM: soporta "export default") -->
+<script type="module">
+  async function loadStock() {
+    try {
+      const mod = await import('./stock-data.js');        // tu archivo ESM
+      window.STOCK_DATA = mod.default || mod.STOCK_DATA || [];
+    } catch (e) {
+      console.error('No se pudo importar stock-data.js como módulo', e);
+      window.STOCK_DATA = [];
+    }
+    window.__STOCK_READY__ = true;
+  }
+  await loadStock();
+</script>
 </head>
-<body class="bg-slate-50 text-slate-900">
+
+<body class="bg-slate-50 text-slate-900 min-h-screen">
   <div class="max-w-[1200px] mx-auto p-4">
     <header class="flex items-center justify-between gap-4 mb-4">
       <h1 class="text-2xl font-bold">📦 Despacho de Materiales</h1>
       <nav class="flex gap-2" id="tabs">
-        <button data-tab="despacho" class="tab-btn px-4 py-2 rounded-lg bg-sky-600 text-white">Despacho</button>
+        <button data-tab="despacho"  class="tab-btn px-4 py-2 rounded-lg bg-sky-600 text-white">Despacho</button>
         <button data-tab="descargas" class="tab-btn px-4 py-2 rounded-lg bg-white text-slate-700 border">Descargas</button>
       </nav>
     </header>
 
     <!-- DESPACHO -->
     <section id="view-despacho" class="space-y-4">
+      <!-- Inputs -->
       <div class="grid md:grid-cols-5 grid-cols-1 gap-3">
         <div class="col-span-2">
           <label class="text-xs text-slate-500">Número de parte</label>
@@ -74,6 +89,7 @@
         <div></div>
       </div>
 
+      <!-- Tabla Despacho -->
       <div class="rounded-xl border bg-white overflow-hidden">
         <div class="px-4 py-3 border-b bg-slate-50 font-semibold">Material</div>
         <div class="overflow-auto">
@@ -149,249 +165,261 @@
     <div class="bg-emerald-600 text-white px-4 py-2 rounded-lg shadow-lg">OK</div>
   </div>
 
-<script>
-/* ===== Util ===== */
-const $ = (s,ctx=document)=>ctx.querySelector(s);
-const fmt = n => Number(n||0).toLocaleString('es-MX',{maximumFractionDigits:2});
-const toNum = v => Number(String(v??"").replace(/[^\d.-]/g,""))||0;
+  <!-- Script principal (espera a que __STOCK_READY__ esté listo) -->
+  <script>
+  /* ===== Util ===== */
+  const $ = (s,ctx=document)=>ctx.querySelector(s);
+  const fmt = n => Number(n||0).toLocaleString('es-MX',{maximumFractionDigits:2});
+  const toNum = v => {
+    if (v == null) return 0;
+    let s = String(v).trim().replace(/[^0-9.,-]/g,'');
+    if (s.includes(',') && s.includes('.')) {
+      if (s.lastIndexOf('.') > s.lastIndexOf(',')) s = s.replace(/,/g,'');
+      else s = s.replace(/\./g,'').replace(/,/g,'.');
+    } else if (s.includes(',')) s = s.replace(/,/g,'.');
+    const n = parseFloat(s); return isNaN(n)?0:n;
+  };
+  function toast(msg){const t=$('#toast');t.firstElementChild.textContent=msg;t.classList.remove('hidden');setTimeout(()=>t.classList.add('hidden'),1400);}
 
-function toast(msg){const t=$('#toast');t.firstElementChild.textContent=msg;t.classList.remove('hidden');setTimeout(()=>t.classList.add('hidden'),1400);}
+  /* ===== Config GitHub ===== */
+  const GH = window.GH || {};
+  const RAW1 = `https://raw.githubusercontent.com/${GH.owner}/${GH.repo}/${GH.branch}/descargas.json`;
+  const RAW2 = `https://cdn.jsdelivr.net/gh/${GH.owner}/${GH.repo}@${GH.branch}/descargas.json`;
+  const API_GET = `https://api.github.com/repos/${GH.owner}/${GH.repo}/contents/descargas.json?ref=${GH.branch}`;
+  const API_PUT = `https://api.github.com/repos/${GH.owner}/${GH.repo}/contents/descargas.json`;
 
-/* ===== Config GitHub ===== */
-const GH = window.GH || {};
-const RAW1 = `https://raw.githubusercontent.com/${GH.owner}/${GH.repo}/${GH.branch}/descargas.json`;
-const RAW2 = `https://cdn.jsdelivr.net/gh/${GH.owner}/${GH.repo}@${GH.branch}/descargas.json`;
-const API_GET = `https://api.github.com/repos/${GH.owner}/${GH.repo}/contents/descargas.json?ref=${GH.branch}`;
-const API_PUT = `https://api.github.com/repos/${GH.owner}/${GH.repo}/contents/descargas.json`;
+  let DESC_SHARED = [];   // repo
+  let DESC_LOCAL  = [];   // caché local
 
-let DESC_SHARED = [];   // lo del repo
-let DESC_LOCAL  = [];   // fallback localStorage (por si no hay token)
-/* cache local para no perder registros si falla escritura remota */
-function loadLocal(){ try{ DESC_LOCAL = JSON.parse(localStorage.getItem('desc_local_v1')||'[]'); }catch{DESC_LOCAL=[];} }
-function saveLocal(){ localStorage.setItem('desc_local_v1', JSON.stringify(DESC_LOCAL)); }
+  function loadLocal(){ try{ DESC_LOCAL = JSON.parse(localStorage.getItem('desc_local_v1')||'[]'); }catch{DESC_LOCAL=[];} }
+  function saveLocal(){ localStorage.setItem('desc_local_v1', JSON.stringify(DESC_LOCAL)); }
 
-/* ===== Lectura periódica del repo ===== */
-async function pullShared(){
-  const urls = [RAW1, RAW2];
-  for (const u of urls) {
-    try { const r = await fetch(u+'?t='+Date.now(),{cache:'no-store'}); if (r.ok) { const j=await r.json(); if(Array.isArray(j)){ DESC_SHARED=j; return; } } }
-    catch {}
+  async function pullShared(){
+    const urls=[RAW1,RAW2];
+    for(const u of urls){
+      try{
+        const r=await fetch(u+'?t='+Date.now(),{cache:'no-store'});
+        if(r.ok){ const j=await r.json(); if(Array.isArray(j)){ DESC_SHARED=j; return; } }
+      }catch{}
+    }
+    DESC_SHARED=[];
   }
-  DESC_SHARED = []; // si no carga, no frena UI
-}
 
-/* ===== Escritura (con token) ===== */
-async function pushMergedToGitHub(merged){
-  if (!GH.token) return false;
-  try{
-    // 1) leer sha actual
-    const m = await fetch(API_GET, { headers: {'Accept':'application/vnd.github+json','Authorization':`Bearer ${GH.token}`}});
-    const meta = m.ok ? await m.json() : null;
-    const sha = meta?.sha;
+  async function pushMergedToGitHub(merged){
+    if(!GH.token) return false;
+    try{
+      const m = await fetch(API_GET,{headers:{'Accept':'application/vnd.github+json','Authorization':`Bearer ${GH.token}`}});
+      const meta = m.ok ? await m.json() : null;
+      const sha = meta?.sha;
+      const content = btoa(unescape(encodeURIComponent(JSON.stringify(merged, null, 2))));
+      const body = { message:`chore: update descargas ${new Date().toISOString()}`, content, branch: GH.branch, sha };
+      const p = await fetch(API_PUT,{
+        method:'PUT',
+        headers:{'Accept':'application/vnd.github+json','Authorization':`Bearer ${GH.token}`,'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      });
+      return p.ok;
+    }catch{ return false; }
+  }
 
-    // 2) subir contenido
-    const content = btoa(unescape(encodeURIComponent(JSON.stringify(merged, null, 2))));
-    const body = { message:`chore: update descargas ${new Date().toISOString()}`, content, branch: GH.branch, sha };
-    const p = await fetch(API_PUT, {
-      method:'PUT',
-      headers:{'Accept':'application/vnd.github+json','Authorization':`Bearer ${GH.token}`,'Content-Type':'application/json'},
-      body: JSON.stringify(body)
+  /* ===== Stock helpers ===== */
+  function stockPorNP(np){
+    const base = Array.isArray(window.STOCK_DATA)? window.STOCK_DATA : [];
+    const rows = base.filter(r => String(r.Material||'').toUpperCase()===String(np||'').toUpperCase());
+    const map = new Map();
+    for (const r of rows){
+      const key = `${r.Bin}|${r.SLoc}|${r.Batch}`;
+      const cur = map.get(key) || { ...r, Unrestricted: toNum(r.Unrestricted) };
+      cur.Unrestricted += toNum(r.Unrestricted);
+      map.set(key, cur);
+    }
+    return [...map.values()];
+  }
+  function sumDespachado(material,sloc,batch,arr){
+    return (arr||[]).filter(x=>x.material===material && x.sloc===sloc && x.batch===batch)
+                    .reduce((s,x)=>s + Number(x.cantidad||0), 0);
+  }
+
+  /* ===== Estado/UI ===== */
+  let filasDespacho = [];
+  let NP_ACTUAL = "";
+  let currentTab = "despacho";
+
+  function recomputeDisponible(){
+    const all = [...DESC_SHARED, ...DESC_LOCAL];
+    for (const row of filasDespacho){
+      const ya = sumDespachado(row.Material, row.SLoc, row.Batch, all);
+      row.disponible = toNum(row.Unrestricted) - ya;
+    }
+  }
+
+  function renderDespacho(){
+    const tb = $('#bodyDespacho'); tb.innerHTML='';
+    for (const f of filasDespacho){
+      const danger = (f.disponible<=0) || (f.qty>0 && f.qty>f.disponible);
+      tb.insertAdjacentHTML('beforeend', `
+        <tr class="border-b ${danger?'bg-rose-50':''} hover:bg-sky-50 transition-colors">
+          <td class="px-2 py-1 text-rose-600 font-semibold">${danger?'SIN STOCK':''}</td>
+          <td class="px-2 py-1">${f.Batch||''}</td>
+          <td class="px-2 py-1">${f.Material}</td>
+          <td class="px-2 py-1">${f["Material Description"]||''}</td>
+          <td class="px-2 py-1">${f.BUn||''}</td>
+          <td class="px-2 py-1">${f.MTyp||''}</td>
+          <td class="px-2 py-1">${f.SLoc||''}</td>
+          <td class="px-2 py-1">${f.Bin||''}</td>
+          <td class="px-2 py-1 text-right">${fmt(f.Unrestricted)} <span class="text-xs text-slate-500">(disp: ${fmt(f.disponible)})</span></td>
+          <td class="px-2 py-1 text-right">
+            <input type="number" min="0" step="1" value="${f.qty||0}" data-k="${f._k}" class="qty w-20 px-2 py-1 rounded-md border text-right"/>
+          </td>
+          <td class="px-2 py-1">${f.REMARK||''}</td>
+          <td class="px-2 py-1"><input data-k="${f._k}" class="coment w-56 px-2 py-1 rounded-md border" placeholder="Comentario" value="${f.comentario||''}"/></td>
+          <td class="px-2 py-1 text-center">
+            <input type="checkbox" data-k="${f._k}" class="chk w-5 h-5" ${f.check?'checked':''} ${danger?'disabled':''}/>
+          </td>
+        </tr>
+      `);
+    }
+    // binds
+    $('#bodyDespacho').querySelectorAll('.qty').forEach(inp=>{
+      const k=inp.dataset.k; inp.addEventListener('input',e=>{ const r=filasDespacho.find(x=>x._k===k); r.qty=Math.floor(toNum(e.target.value)); });
     });
-    return p.ok;
-  }catch(e){ return false; }
-}
-
-/* ===== Stock helpers ===== */
-const STOCK = Array.isArray(window.STOCK_DATA)? window.STOCK_DATA : [];
-function stockPorNP(np){
-  const rows = STOCK.filter(r => String(r.Material||'').toUpperCase()===String(np||'').toUpperCase());
-  const map = new Map();
-  for (const r of rows){
-    const key = `${r.Bin}|${r.SLoc}|${r.Batch}`;
-    const cur = map.get(key) || { ...r, Unrestricted: toNum(r.Unrestricted) };
-    cur.Unrestricted += toNum(r.Unrestricted);
-    map.set(key, cur);
-  }
-  return [...map.values()];
-}
-function sumDespachado(material, sloc, batch, arr){
-  return (arr||[]).filter(x => x.material===material && x.sloc===sloc && x.batch===batch)
-                  .reduce((s,x)=>s + Number(x.cantidad||0), 0);
-}
-
-/* ===== Estado/UI ===== */
-let filasDespacho = [];
-let NP_ACTUAL = "";
-let currentTab = "despacho";
-
-function recomputeDisponible(){
-  const all = [...DESC_SHARED, ...DESC_LOCAL];
-  for (const row of filasDespacho){
-    const ya = sumDespachado(row.Material, row.SLoc, row.Batch, all);
-    row.disponible = toNum(row.Unrestricted) - ya;
-  }
-}
-
-function renderDespacho(){
-  const tb = $('#bodyDespacho'); tb.innerHTML='';
-  for (const f of filasDespacho){
-    const danger = (f.disponible<=0) || (f.qty>0 && f.qty>f.disponible);
-    tb.insertAdjacentHTML('beforeend', `
-      <tr class="border-b ${danger?'bg-rose-50':''} hover:bg-sky-50 transition-colors">
-        <td class="px-2 py-1 text-rose-600 font-semibold">${danger?'SIN STOCK':''}</td>
-        <td class="px-2 py-1">${f.Batch||''}</td>
-        <td class="px-2 py-1">${f.Material}</td>
-        <td class="px-2 py-1">${f["Material Description"]||''}</td>
-        <td class="px-2 py-1">${f.BUn||''}</td>
-        <td class="px-2 py-1">${f.MTyp||''}</td>
-        <td class="px-2 py-1">${f.SLoc||''}</td>
-        <td class="px-2 py-1">${f.Bin||''}</td>
-        <td class="px-2 py-1 text-right">${fmt(f.Unrestricted)} <span class="text-xs text-slate-500">(disp: ${fmt(f.disponible)})</span></td>
-        <td class="px-2 py-1 text-right">
-          <input type="number" min="0" step="1" value="${f.qty||0}" data-k="${f._k}" class="qty w-20 px-2 py-1 rounded-md border text-right"/>
-        </td>
-        <td class="px-2 py-1">${f.REMARK||''}</td>
-        <td class="px-2 py-1"><input data-k="${f._k}" class="coment w-56 px-2 py-1 rounded-md border" placeholder="Comentario" value="${f.comentario||''}"/></td>
-        <td class="px-2 py-1 text-center">
-          <input type="checkbox" data-k="${f._k}" class="chk w-5 h-5" ${f.check?'checked':''} ${danger?'disabled':''}/>
-        </td>
-      </tr>
-    `);
-  }
-  // binds
-  $('#bodyDespacho').querySelectorAll('.qty').forEach(inp=>{
-    const k=inp.dataset.k; inp.addEventListener('input',e=>{ const r=filasDespacho.find(x=>x._k===k); r.qty=Math.floor(toNum(e.target.value)); });
-  });
-  $('#bodyDespacho').querySelectorAll('.coment').forEach(inp=>{
-    const k=inp.dataset.k; inp.addEventListener('input',e=>{ const r=filasDespacho.find(x=>x._k===k); r.comentario=e.target.value; });
-  });
-  $('#bodyDespacho').querySelectorAll('.chk').forEach(inp=>{
-    const k=inp.dataset.k; inp.addEventListener('change',e=>{ const r=filasDespacho.find(x=>x._k===k); r.check=e.target.checked; });
-  });
-}
-
-async function buscar(){
-  const np = $('#np').value.trim(); NP_ACTUAL=np;
-  if(!np){ filasDespacho=[]; renderDespacho(); return; }
-  const base = stockPorNP(np);
-  filasDespacho = base.map((r,i)=>({ ...r, qty:0, comentario:"", check:false, _k:`${r.Bin}|${r.SLoc}|${r.Batch}|${i}` }));
-  recomputeDisponible();
-  renderDespacho();
-}
-
-async function despachar(){
-  const matricula=$('#matricula').value.trim();
-  const neTecnico=$('#neTecnico').value.trim();
-  const usuarioAlmacen=$('#usuarioAlmacen').value.trim();
-  const wo=$('#wo').value.trim();
-  const cliente=$('#cliente').value;
-
-  const nuevos=[];
-  for (const f of filasDespacho){
-    const peligro = (f.disponible<=0) || (f.qty>0 && f.qty>f.disponible);
-    if (!f.check || !f.qty || peligro) continue;
-    nuevos.push({
-      matricula, cliente, np: f.Material,
-      descripcion: f["Material Description"]||"",
-      wo, cantidad: Math.floor(toNum(f.qty)), um: f.BUn,
-      sloc: f.SLoc, batch: f.Batch,
-      neTecnico, usuarioAlmacen,
-      fecha: new Date().toISOString().replace('T',' ').slice(0,16),
-      comentario: f.comentario||"",
-      material: f.Material
+    $('#bodyDespacho').querySelectorAll('.coment').forEach(inp=>{
+      const k=inp.dataset.k; inp.addEventListener('input',e=>{ const r=filasDespacho.find(x=>x._k===k); r.comentario=e.target.value; });
+    });
+    $('#bodyDespacho').querySelectorAll('.chk').forEach(inp=>{
+      const k=inp.dataset.k; inp.addEventListener('change',e=>{ const r=filasDespacho.find(x=>x._k===k); r.check=e.target.checked; });
     });
   }
-  if (!nuevos.length) return;
 
-  // 1) Añade a caché local para no perderlos si falla
-  loadLocal(); DESC_LOCAL = DESC_LOCAL.concat(nuevos); saveLocal();
-
-  // 2) Empuja al repo si hay token
-  let pushed = false;
-  if (GH.token){
-    await pullShared(); // lee lo último
-    const merged = (DESC_SHARED||[]).concat(DESC_LOCAL||[]);
-    pushed = await pushMergedToGitHub(merged);
+  async function buscar(){
+    const np = $('#np').value.trim(); NP_ACTUAL=np;
+    if(!np){ filasDespacho=[]; renderDespacho(); return; }
+    const base = stockPorNP(np);
+    filasDespacho = base.map((r,i)=>({ ...r, qty:0, comentario:"", check:false, _k:`${r.Bin}|${r.SLoc}|${r.Batch}|${i}` }));
+    recomputeDisponible();
+    renderDespacho();
   }
 
-  // 3) Si subió, limpia cache local
-  if (pushed){ DESC_LOCAL = []; saveLocal(); toast('Sincronizado'); }
-  else { toast('Guardado local (sin token o error)'); }
+  async function despachar(){
+    const matricula=$('#matricula').value.trim();
+    const neTecnico=$('#neTecnico').value.trim();
+    const usuarioAlmacen=$('#usuarioAlmacen').value.trim();
+    const wo=$('#wo').value.trim();
+    const cliente=$('#cliente').value;
 
-  // Limpia seleccionados de la tabla
-  filasDespacho = filasDespacho.filter(f => !(f.check && f.qty));
-  await refreshAll(); // recomputa y redibuja
-}
+    const nuevos=[];
+    for (const f of filasDespacho){
+      const peligro = (f.disponible<=0) || (f.qty>0 && f.qty>f.disponible);
+      if (!f.check || !f.qty || peligro) continue;
+      nuevos.push({
+        matricula, cliente, np: f.Material,
+        descripcion: f["Material Description"]||"",
+        wo, cantidad: Math.floor(toNum(f.qty)), um: f.BUn,
+        sloc: f.SLoc, batch: f.Batch,
+        neTecnico, usuarioAlmacen,
+        fecha: new Date().toISOString().replace('T',' ').slice(0,16),
+        comentario: f.comentario||"",
+        material: f.Material
+      });
+    }
+    if (!nuevos.length) return;
 
-async function refreshAll(){
-  await pullShared();
-  recomputeDisponible();
-  renderDespacho();
-  if (currentTab==='descargas') renderDescargas();
-}
+    // 1) cache local para no perder nada si la escritura remota falla
+    loadLocal(); DESC_LOCAL = DESC_LOCAL.concat(nuevos); saveLocal();
 
-function renderDescargas(){
-  const all = (DESC_SHARED||[]).concat(DESC_LOCAL||[]);
-  const tb = $('#bodyDescargas'); tb.innerHTML='';
-  for (const r of all){
-    tb.insertAdjacentHTML('beforeend', `
-      <tr class="border-b hover:bg-sky-50">
-        <td class="px-2 py-1">${r.matricula||''}</td>
-        <td class="px-2 py-1">${r.cliente||''}</td>
-        <td class="px-2 py-1">${r.np||''}</td>
-        <td class="px-2 py-1">${r.descripcion||''}</td>
-        <td class="px-2 py-1">${r.wo||''}</td>
-        <td class="px-2 py-1 text-right">${r.cantidad??0}</td>
-        <td class="px-2 py-1">${r.um||''}</td>
-        <td class="px-2 py-1">${r.sloc||''}</td>
-        <td class="px-2 py-1">${r.batch||''}</td>
-        <td class="px-2 py-1">${r.neTecnico||''}</td>
-        <td class="px-2 py-1">${r.usuarioAlmacen||''}</td>
-        <td class="px-2 py-1">${r.fecha||''}</td>
-        <td class="px-2 py-1">${r.comentario||''}</td>
-      </tr>
-    `);
+    // 2) intenta subir al repo si hay token
+    let pushed = false;
+    if (GH.token){
+      await pullShared(); // mergea con lo último
+      const merged = (DESC_SHARED||[]).concat(DESC_LOCAL||[]);
+      pushed = await pushMergedToGitHub(merged);
+    }
+
+    // 3) estado UI
+    if (pushed){ DESC_LOCAL = []; saveLocal(); toast('Sincronizado'); }
+    else { toast('Guardado local (sin token o error)'); }
+
+    // limpia seleccionados
+    filasDespacho = filasDespacho.filter(f => !(f.check && f.qty));
+    await refreshAll();
   }
-}
 
-/* ===== Tabs / botones ===== */
-function switchTab(tab){
-  currentTab=tab;
-  document.querySelectorAll('#tabs .tab-btn').forEach(b=>{ b.classList.remove('bg-sky-600','text-white'); b.classList.add('bg-white','text-slate-700','border'); });
-  const btn = document.querySelector(`[data-tab="${tab}"]`);
-  btn.classList.add('bg-sky-600','text-white'); btn.classList.remove('bg-white','text-slate-700','border');
-  document.querySelectorAll('section[id^="view-"]').forEach(sec=>sec.classList.add('hidden'));
-  document.getElementById('view-'+tab).classList.remove('hidden');
-  if (tab==='descargas') renderDescargas();
-}
+  async function refreshAll(){
+    await pullShared();
+    recomputeDisponible();
+    renderDespacho();
+    if (currentTab==='descargas') renderDescargas();
+  }
 
-function exportCSV(){
-  const all = (DESC_SHARED||[]).concat(DESC_LOCAL||[]);
-  const cols = ["matricula","cliente","np","descripcion","wo","cantidad","um","sloc","batch","neTecnico","usuarioAlmacen","fecha","comentario"];
-  const esc = v => `"${String(v??"").replaceAll(`"`,`""`)}"`;
-  const csv = [cols.join(",")].concat(all.map(r=>cols.map(c=>esc(r[c])).join(","))).join("\n");
-  const blob = new Blob([csv],{type:"text/csv;charset=utf-8"});
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'descargas.csv'; a.click();
-  URL.revokeObjectURL(a.href);
-}
+  function renderDescargas(){
+    const all = (DESC_SHARED||[]).concat(DESC_LOCAL||[]);
+    const tb = $('#bodyDescargas'); tb.innerHTML='';
+    for (const r of all){
+      tb.insertAdjacentHTML('beforeend', `
+        <tr class="border-b hover:bg-sky-50">
+          <td class="px-2 py-1">${r.matricula||''}</td>
+          <td class="px-2 py-1">${r.cliente||''}</td>
+          <td class="px-2 py-1">${r.np||''}</td>
+          <td class="px-2 py-1">${r.descripcion||''}</td>
+          <td class="px-2 py-1">${r.wo||''}</td>
+          <td class="px-2 py-1 text-right">${r.cantidad??0}</td>
+          <td class="px-2 py-1">${r.um||''}</td>
+          <td class="px-2 py-1">${r.sloc||''}</td>
+          <td class="px-2 py-1">${r.batch||''}</td>
+          <td class="px-2 py-1">${r.neTecnico||''}</td>
+          <td class="px-2 py-1">${r.usuarioAlmacen||''}</td>
+          <td class="px-2 py-1">${r.fecha||''}</td>
+          <td class="px-2 py-1">${r.comentario||''}</td>
+        </tr>
+      `);
+    }
+  }
 
-/* ===== Init ===== */
-(async function init(){
-  loadLocal();
-  await refreshAll();
+  function switchTab(tab){
+    currentTab=tab;
+    document.querySelectorAll('#tabs .tab-btn').forEach(b=>{ b.classList.remove('bg-sky-600','text-white'); b.classList.add('bg-white','text-slate-700','border'); });
+    const btn = document.querySelector(`[data-tab="${tab}"]`);
+    btn.classList.add('bg-sky-600','text-white'); btn.classList.remove('bg-white','text-slate-700','border');
+    document.querySelectorAll('section[id^="view-"]').forEach(sec=>sec.classList.add('hidden'));
+    document.getElementById('view-'+tab).classList.remove('hidden');
+    if (tab==='descargas') renderDescargas();
+  }
 
-  $('#btnBuscar').addEventListener('click', buscar);
-  $('#np').addEventListener('keydown', e => { if (e.key==='Enter') buscar(); });
-  $('#btnDespachar').addEventListener('click', despachar);
-  $('#btnBorrar').addEventListener('click', ()=>{ filasDespacho=[]; $('#np').value=''; renderDespacho(); });
-  $('#btnExportarDescargas').addEventListener('click', exportCSV);
-  $('#btnLimpiarLocal').addEventListener('click', ()=>{ if(confirm('¿Vaciar caché local?')){ DESC_LOCAL=[]; saveLocal(); refreshAll(); }});
-  document.querySelectorAll('#tabs .tab-btn').forEach(btn=>btn.addEventListener('click',()=>switchTab(btn.dataset.tab)));
+  function exportCSV(){
+    const all = (DESC_SHARED||[]).concat(DESC_LOCAL||[]);
+    const cols = ["matricula","cliente","np","descripcion","wo","cantidad","um","sloc","batch","neTecnico","usuarioAlmacen","fecha","comentario"];
+    const esc = v => `"${String(v??"").replaceAll('"','""')}"`;
+    const csv = [cols.join(",")].concat(all.map(r=>cols.map(c=>esc(r[c])).join(","))).join("\n");
+    const blob = new Blob([csv],{type:"text/csv;charset=utf-8"});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'descargas.csv'; a.click();
+    URL.revokeObjectURL(a.href);
+  }
 
-  // "casi tiempo real": refresca repo cada 2s
-  setInterval(refreshAll, 2000);
-})();
-</script>
+  // ==== ESPERAR STOCK Y ARRANCAR ====
+  (async function init(){
+    const t0 = Date.now();
+    while (!window.__STOCK_READY__ && Date.now()-t0 < 5000) {
+      await new Promise(r => setTimeout(r, 25));
+    }
+
+    loadLocal();
+    await refreshAll();
+
+    $('#btnBuscar').addEventListener('click', buscar);
+    $('#np').addEventListener('keydown', e => { if (e.key==='Enter') buscar(); });
+    $('#btnDespachar').addEventListener('click', despachar);
+    $('#btnBorrar').addEventListener('click', () => { filasDespacho=[]; $('#np').value=''; renderDespacho(); });
+    $('#btnExportarDescargas').addEventListener('click', exportCSV);
+    $('#btnLimpiarLocal').addEventListener('click', () => { if (confirm('¿Vaciar caché local?')) { DESC_LOCAL=[]; saveLocal(); refreshAll(); }});
+    document.querySelectorAll('#tabs .tab-btn').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
+
+    // “casi tiempo real”: refresca repo cada 2s
+    setInterval(refreshAll, 2000);
+
+    console.log(`✅ STOCK_DATA listo: ${Array.isArray(window.STOCK_DATA)?window.STOCK_DATA.length:0} filas`);
+  })();
+  </script>
 </body>
 </html>
+
 
